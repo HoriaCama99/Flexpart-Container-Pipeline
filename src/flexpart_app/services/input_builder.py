@@ -85,6 +85,8 @@ LRECOUTSTEP=        {sim.numerics.output_interval_sec},
 LRECOUTAVER=        {sim.numerics.output_interval_sec},
 LRECOUTSAMPLE=       {sim.numerics.sampling_interval_sec},
 LSYNCTIME=           {sim.numerics.sampling_interval_sec},
+CTL=          -5.0000000,
+IFINE=                 4,
 IOUT=                  1,
 IPOUT=                 0,
 LSUBGRID=              0,
@@ -96,8 +98,19 @@ IPIN=                  0,
 IOUTPUTFOREACHRELEASE= 0,
 IFLUX=                 0,
 MDOMAINFILL=           0,
+IND_SOURCE=            1,
+IND_RECEPTOR=          0,
+MQUASILAG=             0,
+NESTED_OUTPUT=         0,
 LNETCDFOUT=            {sim.numerics.netcdf_output},
 LINIT_COND=            0,
+SFC_ONLY=              0,
+CBLFLAG=               0,
+OHFIELDS_PATH= "../../flexin/",
+NXSHIFT=               0,
+MAXTHREADGRID=         4,
+MAXFILESIZE=       10000,
+LOGVERTINTERP=         0,
 &END
 """
         (cfg.paths.workspace / "COMMAND").write_text(command)
@@ -109,47 +122,49 @@ LINIT_COND=            0,
         release_end = min(window.end, window.start + timedelta(hours=release.duration_hours))
         num = sim.numerics.particles
         content = f"""&RELEASES_CTRL
-SPECNUM=              1,
-NUMRELEASES=          1,
-&END
-&RELEASES
-RELINDEX=           1,
-IDATE1=        {window.start.strftime('%Y%m%d')},
-ITIME1=          {window.start.strftime('%H%M%S')},
-IDATE2=        {release_end.strftime('%Y%m%d')},
-ITIME2=          {release_end.strftime('%H%M%S')},
-LON1=        {release.longitude:.4f},
-LON2=        {release.longitude:.4f},
-LAT1=        {release.latitude:.4f},
-LAT2=        {release.latitude:.4f},
-Z1=          {release.height_bottom_m:.1f},
-Z2=          {release.height_top_m:.1f},
-MASS=        {sim.release_mass_kg:.6f},
-NPOINTS=     {num},
-&END
+ NSPEC      =           1,
+ SPECNUM_REL=           1,
+ /
+&RELEASE
+ IDATE1  =       {window.start.strftime('%Y%m%d')},
+ ITIME1  =         {window.start.strftime('%H%M%S')},
+ IDATE2  =       {release_end.strftime('%Y%m%d')},
+ ITIME2  =         {release_end.strftime('%H%M%S')},
+ LON1    =         {release.longitude:8.3f},
+ LON2    =         {release.longitude:8.3f},
+ LAT1    =         {release.latitude:8.3f},
+ LAT2    =         {release.latitude:8.3f},
+ Z1      =         {release.height_bottom_m:8.3f},
+ Z2      =         {release.height_top_m:8.3f},
+ ZKIND   =              1,
+ MASS    =       {sim.release_mass_kg:10.4E},
+ PARTS   =          {num:8d},
+ COMMENT =    "RELEASE 1",
+ /
 """
         (cfg.paths.workspace / "RELEASES").write_text(content)
 
     def _write_species(self, cfg: RuntimeConfig) -> None:
         species = cfg.simulation.species
-        content = f"""&SPECIES
-NAME= '{species.name}',
-MASS= {species.molecular_weight:.2f},
-HALFLIFE= {species.half_life_days or 0.0},
-&END
+        content = f"""&SPECIES_PARAMS
+ PSPECIES="{species.name}",
+ PWEIGHTMOLAR={species.molecular_weight:.2f},
+ PDECAY={species.half_life_days or -9.9},
+ /
 """
         (cfg.paths.species_dir / "SPECIES_001").write_text(content)
 
     def _write_outgrid(self, cfg: RuntimeConfig) -> None:
         release = cfg.simulation.release
         content = f"""&OUTGRID
-OUTLON0=        {release.longitude - 5:.1f},
-OUTLAT0=        {release.latitude - 5:.1f},
-NUMXGRID=             60,
-NUMYGRID=             60,
-DXOUT=               0.2,
-DYOUT=               0.2,
-&END
+ OUTLON0=        {release.longitude - 5:.1f},
+ OUTLAT0=        {release.latitude - 5:.1f},
+ NUMXGRID=             60,
+ NUMYGRID=             60,
+ DXOUT=               0.2,
+ DYOUT=               0.2,
+ OUTHEIGHTS=   500.0, 1500.0, 5000.0, 50000.0,
+ /
 """
         (cfg.paths.workspace / "OUTGRID").write_text(content)
 
@@ -160,4 +175,3 @@ LAGE=                   0,
 &END
 """
         (cfg.paths.workspace / "AGECLASSES").write_text(content)
-

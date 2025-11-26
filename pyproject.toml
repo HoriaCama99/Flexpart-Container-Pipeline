@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flexpart-app"
+version = "0.1.0"
+description = "CLI utilities to drive FLEXPART simulations from ERA5 data"
+authors = [{name = "ACTRIS-UBB"}]
+requires-python = ">=3.10"
+dependencies = [
+    "typer[all]>=0.12",
+    "pydantic>=2.7",
+    "rich>=13.7",
+]
+
+[project.scripts]
+flexpart-app = "flexpart_app.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]

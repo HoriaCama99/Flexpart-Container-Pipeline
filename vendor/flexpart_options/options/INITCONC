@@ -1,0 +1,41 @@
+!*******************************************************************************
+!                                                                              *
+!      Input file for the Lagrangian particle dispersion model FLEXPART        *
+!  Please specify file info for initial mixing ratios (domainfill runs only)   *
+!                                                                              *
+! NINIT  =  number of species for which initial concentration specified        *
+! SPECNUM_REL = list of species of length nspec                                *
+!                                                                              *
+! Specify INITCONC variables for each species:                                 *
+! PATH_NAME =  path to initial concentration files                                *
+! FILE_NAME = generic name of file (using YYYY[MM][DD]) for dates              *
+! VAR_NAME  = name of concentration variable in file                           *
+! HYA_NAME  = name of hybrid pressure coord A (use "" if none)                 *
+! HYB_NAME  = name of hybrid pressure coord B (use "" if none)                 *
+! PS_NAME   = name of surface pressure variable (use "" if none)               *
+! Q_NAME    = name of specific humidity variable (use "" if none, then         *
+!             assumes dry air mixing ratio)                                    *
+! PRS_NAME  = name of vertical pressure coordinate (use "" if none)            *
+! ALT_NAME  = name of altitude coordinate (use "" if none)                     *
+! COEFF     = coefficient from input unit to ppbv                              *
+!                                                                              *
+! Note: if hybrid pres coord need variable PS_NAME, otherwise one of           *
+!       ALT_NAME or PRS_NAME needs to be given                                 *
+!                                                                              *
+!*******************************************************************************
+&INITCONC_CTRL
+ NINIT  =  1, 
+ SPECNUM_REL = 26,
+/
+&INITCONC
+ PATH_NAME  = "/xnilu_wrk/users/rlt/NILU/FLEXDATA/BACKGROUND/CAMS/CH4/v20r1/",
+ FILE_NAME  = "cams73_v20r1_ch4_conc_surface_dm_YYYYMM.nc",
+ VAR_NAME   = "CH4",
+ HYA_NAME   = "hyam",
+ HYB_NAME   = "hybm",
+ PS_NAME    = "ps",
+ Q_NAME     = "Q",
+ PRS_NAME   = "",
+ ALT_NAME   = "",
+ COEFF      = 1.,
+/

@@ -1,0 +1,5 @@
+&SATELLITES
+ PSATNAME = "esa_ch4",
+ PPATH    = "/home/rthompson/BACKWARD_RUNS/REGAME/bremen/test_fpctm/",
+ PFILE    = "releases_esa_ch4_YYYYMMDD.nc",
+ /

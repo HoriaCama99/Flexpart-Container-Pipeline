@@ -1,0 +1,74 @@
+Bootstrap: docker
+From: rockylinux:9-minimal
+# alternative from rebuild base image (speeds up the build)
+# From: harbor.wolke.img.univie.ac.at/flexpart/rockylinux9:latest
+Stage: spython-base
+
+%files
+../src /src
+../AVAILABLE /inputs/AVAILABLE
+./entrypoint.sh /entrypoint.sh
+../tests/default_options /options
+
+%post
+# Install necessary packages
+# only when using rockylinux:9-minimal
+microdnf install -y epel-release && \
+microdnf install -y --enablerepo=crb make netcdf-fortran-devel.x86_64 netcdf.x86_64 eccodes eccodes-devel cmake tar gcc-c++ perl git wget && \
+microdnf clean all -y && \
+rm -rf /var/cache/yum
+#
+# Download ECCODES Version 
+# note 2.30.0 has an issue!!!
+# ENV ECCODES=2.31.0
+# RUN curl https://confluence.ecmwf.int/download/attachments/45757960/eccodes-${ECCODES}-Source.tar.gz | tar xz
+# RUN mkdir build && \
+# 	cd build && \
+# 	cmake -DENABLE_ECCODES_OMP_THREADS=ON ../eccodes-*/ && \
+# 	make -j8 && \
+# 	make install
+#
+# set environment variables
+#
+FC=gfortran
+LIBRARY_PATH=/usr/lib64:/usr/local/lib64
+CPATH=/usr/include:/usr/local/include:/usr/lib64/gfortran/modules
+# cmd Arguments for COMMIT ID/tag
+COMMIT=0
+COMMIT=$COMMIT
+# since the new data set is larger, we download the data for the container
+# EC 2009 01 01 00 - 06
+wget  -r -np -nd -A 'EC*' -P /inputs "https://webdata.wolke.img.univie.ac.at/flexpart/"
+mkdir -p /src
+cd /src
+export FC=gfortran
+export LIBRARY_PATH=/usr/lib64:/usr/local/lib64
+export CPATH=/usr/include:/usr/local/include:/usr/lib64/gfortran/modules
+#
+# compile using a standardized 
+# need to fix march to x86_64_v3 , remove mtune
+# here generic means core_avx2
+make -f makefile_gfortran eta=no arch=generic \
+&& make -f makefile_gfortran arch=generic \
+&& mkdir -p /output \
+&& echo -e "/options/\n/output/\n/inputs/\n/inputs/AVAILABLE" > /pathnames
+
+# Entrypoint script (user tips)
+# In the Dockerfile, the ENTRYPOINT command defines the executable, 
+# while CMD sets the default parameter. 
+# so here our entrypoint run script and default FLEXPART_ETA or FLEXPART
+# Could be FLEXPART_ETA pathnames_custom
+%environment
+export FC=gfortran
+export LIBRARY_PATH=/usr/lib64:/usr/local/lib64
+export CPATH=/usr/include:/usr/local/include:/usr/lib64/gfortran/modules
+export COMMIT=$COMMIT
+
+# add a check if output is writeable?
+%runscript
+cd /src
+exec /entrypoint.sh "$@"
+
+%startscript
+cd /src
+exec /entrypoint.sh "$@"

@@ -1,0 +1,106 @@
+# FLEXPART Dockerfile for ARM64 (Apple Silicon)
+# Based on the official FLEXPART v10.4 Dockerfile but adapted for ARM64
+FROM ubuntu:22.04
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV FC=gfortran
+ENV F90=gfortran
+ENV F77=gfortran
+ENV LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/local/lib
+ENV CPATH=/usr/include:/usr/local/include
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gfortran \
+    gcc \
+    g++ \
+    make \
+    cmake \
+    git \
+    wget \
+    curl \
+    netcdf-bin \
+    libnetcdf-dev \
+    libnetcdff-dev \
+    libhdf5-dev \
+    libhdf5-serial-dev \
+    libeccodes-dev \
+    libeccodes-data \
+    python3 \
+    python3-pip \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and build ECCODES (if needed)
+RUN curl -L https://confluence.ecmwf.int/download/attachments/45757960/eccodes-2.31.0-Source.tar.gz | tar xz && \
+    mkdir build && \
+    cd build && \
+    cmake -DENABLE_ECCODES_OMP_THREADS=ON ../eccodes-*/ && \
+    make -j$(nproc) && \
+    make install && \
+    cd / && rm -rf eccodes-* build
+
+# Set working directory
+WORKDIR /
+
+# Copy FLEXPART source (already cloned)
+COPY ./src /src
+
+# Set commit version
+ENV COMMIT=v10.4
+
+# Download sample meteorological data
+RUN wget -r -np -nd -A 'EC2009*' -P /inputs "https://webdata.wolke.img.univie.ac.at/flexpart/" || echo "Data download failed, continuing..."
+
+# Copy configuration files
+COPY ./AVAILABLE /inputs/
+COPY ./containers/entrypoint.sh /entrypoint.sh
+COPY ./options /options
+
+# Fix example files for the downloaded data
+RUN sed -i 's/20120101/20090101/g' /options/COMMAND && \
+    sed -i 's/060000/000000/g' /options/COMMAND && \
+    sed -i 's/120000/030000/g' /options/COMMAND && \
+    sed -i 's/20120101/20090101/g' /options/RELEASES
+
+# Build argument for number of precipitation fields
+# Default to 3 for compatibility with flex_extract/ERA5 data
+ARG NUMPF=3
+
+# Build FLEXPART
+WORKDIR /src
+
+# Configure numpf parameter in par_mod.f90 before compilation
+# This must match the number of precipitation fields in the meteorological data
+# Default: 3 for flex_extract/ERA5 data compatibility
+RUN if ! grep -q "integer,parameter :: numpf=" par_mod.f90; then \
+        echo "ERROR: Could not find numpf parameter in par_mod.f90" && exit 1; \
+    fi && \
+    sed -i "s/\(integer,parameter :: numpf=\)[0-9]*/\1${NUMPF}/" par_mod.f90 && \
+    if ! grep -q "integer,parameter :: numpf=${NUMPF}" par_mod.f90; then \
+        echo "ERROR: Failed to set numpf=${NUMPF} in par_mod.f90" && \
+        echo "Current value:" && grep "numpf=" par_mod.f90 && exit 1; \
+    fi && \
+    echo "✅ Configured numpf=${NUMPF} in par_mod.f90" && \
+    grep "numpf=" par_mod.f90
+
+# Create a modified makefile for ARM64
+RUN cp makefile_gfortran makefile_arm64 && \
+    sed -i 's/-march=generic//g' makefile_arm64 && \
+    sed -i 's/-mtune=generic//g' makefile_arm64 && \
+    sed -i 's/-m64//g' makefile_arm64 && \
+    sed -i 's/-mcmodel=large//g' makefile_arm64
+
+# Compile FLEXPART
+RUN make -f makefile_arm64 clean && \
+    make -f makefile_arm64 eta=no && \
+    make -f makefile_arm64 && \
+    mkdir -p /output && \
+    echo -e "/options/\n/output/\n/inputs/\n/inputs/AVAILABLE" > /pathnames && \
+    echo "✅ FLEXPART compiled successfully with numpf=${NUMPF}"
+
+# Set entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["FLEXPART"]

@@ -1,0 +1,16 @@
+!*******************************************************************************
+!                                                                              *
+!      Input file for the Lagrangian particle dispersion model FLEXPART        *
+!               Please specify reagents used for chemical loss                 *
+!                                                                              *
+! PREAGENT   = reagent name (must be same as variable name and match those     *
+!              used in reactions list in SPECIES file)                         *
+! PREAG_PATH = path to reagent file                                            *
+! PHOURLY    = interpolate field to hourly based on solar zenith angle         *
+!              (0 = NO, 1 = YES)                                               *
+!*******************************************************************************
+&REAGENT_PARAMS
+ PREAGENT="OH",
+ PREAG_PATH="./oh_fields/",
+ PHOURLY=1,
+/

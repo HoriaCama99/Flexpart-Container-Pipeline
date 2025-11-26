@@ -1,0 +1,301 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# Install system dependencies for flex_extract and GRIB tooling
+RUN apt-get update && apt-get install -y \
+        apt-utils \
+    build-essential \
+    gfortran \
+    git \
+        curl \
+    wget \
+    unzip \
+    libeccodes-dev \
+        libeccodes-tools \
+        libemos-dev \
+    libnetcdf-dev \
+    libjpeg-dev \
+        libfftw3-dev \
+    python3-dev \
+    python3-pip \
+        python3-numpy \
+        python3-scipy \
+        python3-netcdf4 \
+        python3-eccodes \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure pip is up to date
+RUN python3 -m pip install --no-cache-dir --upgrade pip
+
+# Minimal Python requirements for flex_extract
+RUN python3 -m pip install --no-cache-dir "attrs>=23.1" "genshi>=0.7.7" "ecmwf-api-client<1.7" "cdsapi>=0.7.5"
+
+# Fetch flex_extract sources via tarball (more robust than git clone)
+ARG FLEX_EXTRACT_BRANCH=master
+ARG FLEX_EXTRACT_ARCHIVE="https://gitlab.phaidra.org/flexpart/flex_extract/-/archive/${FLEX_EXTRACT_BRANCH}/flex_extract-${FLEX_EXTRACT_BRANCH}.tar.gz"
+WORKDIR /opt
+RUN curl --fail --location --retry 5 --retry-delay 5 "${FLEX_EXTRACT_ARCHIVE}" -o flex_extract.tar.gz && \
+    mkdir -p flex_extract_src && \
+    tar -xzf flex_extract.tar.gz -C flex_extract_src --strip-components=1 && \
+    rm flex_extract.tar.gz
+
+# Adjust makefiles to point to the correct multiarch include directories
+RUN ARCH=$(gcc -print-multiarch) && \
+    for mf in Source/Fortran/makefile_local_gfortran Source/Fortran/makefile_fast Source/Fortran/makefile_debug; do \
+        sed -i "s|/usr/lib/x86_64-linux-gnu/fortran/gfortran-mod-15|/usr/lib/${ARCH}/fortran/gfortran-mod-15|g" /opt/flex_extract_src/$mf; \
+        sed -i "s|-Bstatic -leccodes_f90 -leccodes -Bdynamic -lm|-leccodes_f90 -leccodes -lm|g" /opt/flex_extract_src/$mf; \
+    done
+
+# Build the flex_extract toolchain (Fortran + Python)
+WORKDIR /opt/flex_extract_src/Source/Python
+RUN python3 install.py \
+      --target=local \
+      --makefile=makefile_local_gfortran \
+      --installdir=/opt/flex_extract_install
+
+# Expose flex_extract installation directory and binaries
+RUN FLEX_DIR="$(ls -d /opt/flex_extract_install/flex_extract_v* | head -n1)" && \
+    mkdir -p "$${FLEX_DIR}/Run/Control" && \
+    rm -rf /opt/flex_extract && \
+    ln -s "$${FLEX_DIR}" /opt/flex_extract && \
+    ln -s /opt/flex_extract/Source/Fortran/calc_etadot /usr/local/bin/calc_etadot && \
+    ln -s /opt/flex_extract/Source/Fortran/grphreal /usr/local/bin/grphreal && \
+    ln -s /opt/flex_extract/Source/Fortran/phgrreal /usr/local/bin/phgrreal && \
+    ln -s /opt/flex_extract/Source/Fortran/rwgrib2 /usr/local/bin/rwgrib2
+
+ENV FLEXEXTRACT_HOME=/opt/flex_extract
+ENV PYTHONPATH=/opt/flex_extract/Source/Python
+ENV PATH=/opt/flex_extract/Source/Fortran:${PATH}
+
+# Remove source tarball to keep image lean
+RUN rm -rf /opt/flex_extract_src
+
+# Helper script to drive flex_extract end-to-end from the container
+RUN cat <<'PY' >/usr/local/bin/flex_extract_runner
+#!/usr/bin/env python3
+"""Wrapper around flex_extract submit.py for container usage."""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+def _copy_secret(env_var: str, target_name: str) -> bool:
+    path = os.environ.get(env_var)
+    if not path:
+        return False
+    source = Path(path)
+    if not source.exists():
+        print(f"Credential file {source} (from {env_var}) not found", file=sys.stderr)
+        sys.exit(1)
+    target = Path.home() / target_name
+    target.write_text(source.read_text())
+    target.chmod(0o600)
+    return True
+
+def ensure_cdsapi_format(target: Path) -> None:
+    try:
+        lines = target.read_text().splitlines()
+    except FileNotFoundError:
+        return
+    cleaned: list[str] = []
+    for line in lines:
+        if line.strip().startswith("url"):
+            cleaned.append("url: https://cds.climate.copernicus.eu/api")
+        else:
+            cleaned.append(line)
+    if not any(l.startswith("key") for l in cleaned):
+        print(
+            f"CDS credential at {target} missing 'key:' entry. "
+            "Refer to CDS profile page to copy the correct key line.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def prepare_credentials(public_flag: int) -> None:
+    have_cds = _copy_secret("FLEXEXTRACT_CDSAPI_PATH", ".cdsapirc")
+    if have_cds:
+        ensure_cdsapi_format(Path.home() / ".cdsapirc")
+    have_ecmwf = _copy_secret("FLEXEXTRACT_APIKEY_PATH", ".ecmwfapirc")
+    if public_flag and not (have_cds or have_ecmwf):
+        print(
+            "No credentials provided. Set FLEXEXTRACT_CDSAPI_PATH (for CDS access) "
+            "or FLEXEXTRACT_APIKEY_PATH (for ECMWF MARS access).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run flex_extract inside the convert2 container"
+    )
+    parser.add_argument("--start-date", required=True, help="YYYYMMDD")
+    parser.add_argument("--end-date", required=True, help="YYYYMMDD")
+    parser.add_argument("--area", required=True,
+                        help="North/West/South/East (e.g. 60/-20/30/40)")
+    parser.add_argument("--grid", default="0.5",
+                        help="Output grid resolution (e.g. 0.5 or 0.25)")
+    parser.add_argument("--levelist", default="1/to/137",
+                        help="Model level list (e.g. 1/to/137)")
+    parser.add_argument("--basetime", default="0",
+                        help="Base time (0 or 12)")
+    parser.add_argument("--dtime", default="1", help="Output timestep in hours")
+    parser.add_argument("--prefix", default="EC",
+                        help="Prefix for the generated FLEXPART files")
+    parser.add_argument("--input-dir", default="/workspace/input",
+                        help="Working directory for flex_extract temporary files")
+    parser.add_argument("--output-dir", default="/workspace/output",
+                        help="Directory for the final ECYYYYMMDDHH files")
+    parser.add_argument("--public", type=int, default=1,
+                        help="Use public (1) or member (0) datasets")
+    parser.add_argument("--request", type=int, default=0,
+                        help="flex_extract request mode (default: 0)")
+    parser.add_argument("--rrint", type=int, default=1,
+                        help="Precipitation disaggregation method (0|1)")
+    parser.add_argument("--date-chunk", type=int, default=3,
+                        help="Number of days per request chunk")
+    return parser.parse_args()
+
+
+def get_flex_home() -> Path:
+    candidates: list[Path] = []
+
+    raw = os.environ.get("FLEXEXTRACT_HOME")
+    if raw:
+        candidates.append(Path(raw))
+
+    candidates.append(Path("/opt/flex_extract"))
+    install_root = Path("/opt/flex_extract_install")
+    if install_root.exists():
+        candidates.extend(sorted(install_root.glob("flex_extract_v*")))
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if candidate.exists():
+            try:
+                resolved = candidate.resolve()
+            except FileNotFoundError:
+                resolved = candidate.absolute()
+            os.environ["FLEXEXTRACT_HOME"] = str(resolved)
+            return resolved
+
+    print(
+        "flex_extract installation not found. Checked: "
+        + ", ".join(str(path) for path in candidates),
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+def control_template(args: argparse.Namespace, input_dir: Path, output_dir: Path) -> str:
+    north, west, south, east = args.area.split("/")
+    hours = " ".join(f"{h:02d}" for h in range(24))
+    types = " ".join(["AN"] * 24)
+    steps = " ".join(["00"] * 24)
+    return f"""START_DATE {args.start_date}
+END_DATE {args.end_date}
+DTIME {args.dtime}
+TYPE {types}
+TIME {hours}
+STEP {steps}
+ACCTYPE FC
+ACCTIME 06/18
+ACCMAXSTEP 12
+CLASS EA
+STREAM OPER
+GRID {args.grid}
+LEFT {west}
+LOWER {south}
+UPPER {north}
+RIGHT {east}
+LEVELIST {args.levelist}
+RESOL 799
+ETA 1
+OMEGA 0
+FORMAT GRIB2
+PREFIX {args.prefix}
+RRINT {args.rrint}
+CWC 1
+ECSTORAGE 0
+ECTRANS 0
+REQUEST {args.request}
+PUBLIC {args.public}
+DEBUG 0
+INPUTDIR {input_dir}
+OUTPUTDIR {output_dir}
+PP_ID {os.getpid()}
+"""
+
+def write_control_file(control_dir: Path, content: str) -> str:
+    control_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    control_name = f"CONTROL_AUTO_{timestamp}"
+    control_path = control_dir / control_name
+    control_path.write_text(content)
+    return control_name
+
+def run_flex_extract(control_name: str, args: argparse.Namespace,
+                     input_dir: Path, output_dir: Path) -> None:
+    submit = Path(os.environ.get("FLEXEXTRACT_HOME", "/opt/flex_extract")) / "Source" / "Python" / "submit.py"
+    if not submit.exists():
+        print("flex_extract submit.py not found", file=sys.stderr)
+        sys.exit(1)
+    cmd = [
+        "python3", str(submit),
+        f"--controlfile={control_name}",
+        f"--start_date={args.start_date}",
+        f"--end_date={args.end_date}",
+        f"--basetime={args.basetime}",
+        f"--date_chunk={args.date_chunk}",
+        f"--inputdir={input_dir}",
+        f"--outputdir={output_dir}",
+        f"--request={args.request}",
+        f"--public={args.public}"
+    ]
+    env = os.environ.copy()
+    env.pop("CONTROL", None)
+    subprocess.run(cmd, check=True, cwd=str(submit.parent), env=env)
+
+def main() -> int:
+    args = parse_args()
+    prepare_credentials(int(args.public))
+    input_dir = Path(args.input_dir).expanduser()
+    output_dir = Path(args.output_dir).expanduser()
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    flex_home = get_flex_home()
+    control_dir = flex_home / "Run" / "Control"
+    control_content = control_template(args, input_dir, output_dir)
+    control_name = write_control_file(control_dir, control_content)
+    try:
+        run_flex_extract(control_name, args, input_dir, output_dir)
+    finally:
+        control_file = control_dir / control_name
+        if control_file.exists():
+            control_file.unlink()
+    produced = sorted(output_dir.glob(f"{args.prefix}*"))
+    if produced:
+        print("Generated files:")
+        for item in produced:
+            print(f"  {item.name}")
+    else:
+        print("flex_extract completed but produced no EC files", file=sys.stderr)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+PY
+
+RUN chmod +x /usr/local/bin/flex_extract_runner
+
+ENTRYPOINT ["flex_extract_runner"]
